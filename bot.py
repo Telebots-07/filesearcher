@@ -36,6 +36,17 @@ def init_db():
                  (action TEXT, channel_id INTEGER, admin_id INTEGER, timestamp TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS admins 
                  (user_id INTEGER PRIMARY KEY, added_at TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS activity_logs 
+                 (log_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT, details TEXT, timestamp TEXT)''')
+    conn.commit()
+    conn.close()
+
+# Log activity to activity_logs table
+def log_activity(user_id, action, details):
+    conn = sqlite3.connect("bot.db")
+    c = conn.cursor()
+    c.execute("INSERT INTO activity_logs (user_id, action, details, timestamp) VALUES (?, ?, ?, ?)",
+             (user_id, action, details, datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
@@ -56,6 +67,7 @@ def set_admin(user_id):
              (user_id, datetime.now().isoformat()))
     conn.commit()
     conn.close()
+    log_activity(user_id, "admin_setup", "User set as admin")
 
 # Rate limiting
 async def check_rate_limit(user_id):
@@ -84,6 +96,7 @@ async def check_rate_limit(user_id):
     
     if request_count >= 5:
         conn.close()
+        log_activity(user_id, "rate_limit_exceeded", "User exceeded hourly request limit")
         return False
     
     c.execute("UPDATE users SET request_count = request_count + 1, last_request = ? WHERE user_id = ?", 
@@ -112,6 +125,7 @@ async def is_bot_channel_admin(channel_id):
         return any(member.user.id == bot_id for member in admins)
     except Exception as e:
         logging.error(f"Error validating channel {channel_id}: {e}")
+        log_activity(0, "error", f"Failed to validate channel {channel_id}: {str(e)}")
         return False
 
 # Admin menu with storage channel management
@@ -122,7 +136,8 @@ def get_admin_menu():
         [InlineKeyboardButton("📂 Add File", callback_data="admin_add_file"),
          InlineKeyboardButton("🗃 View Logs", callback_data="admin_logs")],
         [InlineKeyboardButton("🚫 User Management", callback_data="admin_users")],
-        [InlineKeyboardButton("📚 Manage Storage Channels", callback_data="admin_manage_channels")]
+        [InlineKeyboardButton("📚 Manage Storage Channels", callback_data="admin_manage_channels")],
+        [InlineKeyboardButton("📜 View Activity Logs", callback_data="admin_activity_logs")]
     ])
 
 # Storage channels menu
@@ -165,6 +180,7 @@ async def start(client, message):
         await message.reply("Welcome, Admin!", reply_markup=get_admin_menu())
     else:
         await message.reply("Welcome! Send a keyword to search for files.")
+        log_activity(user_id, "user_start", "User started the bot")
 
 # Admin command
 @app.on_message(filters.command("admin") & filters.private)
@@ -172,8 +188,10 @@ async def admin_panel(client, message):
     admin_id = get_admin_id()
     if message.from_user.id != admin_id:
         await message.reply("🚫 Unauthorized.")
+        log_activity(message.from_user.id, "unauthorized_access", "Attempted to access admin panel")
         return
     await message.reply("Admin Panel", reply_markup=get_admin_menu())
+    log_activity(admin_id, "admin_panel_access", "Admin accessed the panel")
 
 # Search query across multiple storage channels
 @app.on_message(filters.text & filters.private & ~filters.command(["start", "admin"]))
@@ -183,20 +201,24 @@ async def search_files(client, message):
     
     if len(query) < 3:
         await message.reply("⚠️ Query must be at least 3 characters long.")
+        log_activity(user_id, "invalid_query", "Query too short")
         return
     
     # Validate query (basic banned words check)
     banned_words = ["spam", "hack", "illegal"]
     if any(word in query.lower() for word in banned_words):
         await message.reply("🚫 Invalid query.")
+        log_activity(user_id, "invalid_query", "Query contains banned words")
         return
     
     await message.reply("🔍 Searching for files...")
+    log_activity(user_id, "search_files", f"User searched for: {query}")
     
     # Search across all storage channels
     storage_channels = get_storage_channels()
     if not storage_channels:
         await message.reply("🚫 No storage channels configured. Please contact the admin.")
+        log_activity(user_id, "no_channels", "No storage channels available")
         return
     
     buttons = []
@@ -216,6 +238,7 @@ async def search_files(client, message):
         )
     else:
         await message.reply("🚫 No files found. Try a different keyword.")
+        log_activity(user_id, "no_results", f"No files found for query: {query}")
 
 # Handle file request using forward_messages
 @app.on_callback_query(filters.regex(r"request_(-?\d+)_(\d+)"))
@@ -239,6 +262,7 @@ async def handle_request(client, callback):
     conn.commit()
     conn.close()
     
+    log_activity(user_id, "file_request", f"Requested file from channel {channel_id}, message ID {message_id}")
     await callback.answer("File forwarded!")
 
 # Admin actions
@@ -247,6 +271,7 @@ async def handle_admin_action(client, callback):
     admin_id = get_admin_id()
     if callback.from_user.id != admin_id:
         await callback.answer("Unauthorized")
+        log_activity(callback.from_user.id, "unauthorized_action", "Attempted admin action")
         return
     
     action = callback.data.split("_")[1]
@@ -263,6 +288,7 @@ async def handle_admin_action(client, callback):
         await callback.message.reply(
             f"📊 Stats:\nTotal Users: {total_users}\nTotal Requests: {total_requests}"
         )
+        log_activity(admin_id, "view_stats", "Admin viewed bot stats")
     
     elif action == "logs":
         conn = sqlite3.connect("bot.db")
@@ -275,23 +301,39 @@ async def handle_admin_action(client, callback):
         for log in logs:
             log_text += f"User {log[0]}: {log[1]} at {log[2]}\n"
         await callback.message.reply(log_text)
+        log_activity(admin_id, "view_request_logs", "Admin viewed request logs")
+    
+    elif action == "activity_logs":
+        conn = sqlite3.connect("bot.db")
+        c = conn.cursor()
+        c.execute("SELECT user_id, action, details, timestamp FROM activity_logs ORDER BY timestamp DESC LIMIT 10")
+        logs = c.fetchall()
+        conn.close()
+        
+        log_text = "📜 Activity Logs:\n"
+        for log in logs:
+            log_text += f"User {log[0]}: {log[1]} - {log[2]} at {log[3]}\n"
+        await callback.message.reply(log_text)
+        log_activity(admin_id, "view_activity_logs", "Admin viewed activity logs")
     
     elif action == "add_file":
         await callback.message.reply("📂 Please upload a file.")
-        # Add file handling logic here (to be implemented)
+        log_activity(admin_id, "add_file_prompt", "Admin prompted to add a file")
     
     elif action == "broadcast":
         await callback.message.reply("📢 Enter the broadcast message:")
-        # Add broadcast logic here (to be implemented)
+        log_activity(admin_id, "broadcast_prompt", "Admin prompted to send a broadcast")
     
     elif action == "users":
         await callback.message.reply("🚫 User Management: Not implemented yet.")
+        log_activity(admin_id, "user_management_access", "Admin accessed user management (not implemented)")
     
     elif action == "manage_channels":
         await callback.message.edit_text(
             "📚 Manage Storage Channels",
             reply_markup=get_storage_channels_menu()
         )
+        log_activity(admin_id, "manage_channels", "Admin accessed manage channels menu")
     
     await callback.answer()
 
@@ -301,6 +343,7 @@ async def handle_channel_management(client, callback):
     admin_id = get_admin_id()
     if callback.from_user.id != admin_id:
         await callback.answer("Unauthorized")
+        log_activity(callback.from_user.id, "unauthorized_channel_action", "Attempted channel management")
         return
     
     data = callback.data
@@ -309,6 +352,7 @@ async def handle_channel_management(client, callback):
         await callback.message.reply(
             "📚 Please forward a message from the channel you want to add as a storage channel. I need to be an admin of that channel."
         )
+        log_activity(admin_id, "add_channel_prompt", "Admin prompted to add a storage channel")
         await callback.answer()
     
     elif data == "back_to_admin":
@@ -316,6 +360,7 @@ async def handle_channel_management(client, callback):
             "Admin Panel",
             reply_markup=get_admin_menu()
         )
+        log_activity(admin_id, "back_to_admin", "Admin returned to admin menu")
         await callback.answer()
     
     elif data.startswith("view_channel_"):
@@ -324,6 +369,7 @@ async def handle_channel_management(client, callback):
             f"📚 Channel {channel_id}",
             reply_markup=get_channel_details_menu(channel_id)
         )
+        log_activity(admin_id, "view_channel", f"Admin viewed channel {channel_id}")
         await callback.answer()
     
     elif data.startswith("remove_channel_"):
@@ -340,6 +386,7 @@ async def handle_channel_management(client, callback):
             f"📚 Channel {channel_id} removed successfully.",
             reply_markup=get_storage_channels_menu()
         )
+        log_activity(admin_id, "remove_channel", f"Admin removed channel {channel_id}")
         await callback.answer()
 
 # Handle forwarded message from admin to add storage channel
@@ -347,11 +394,13 @@ async def handle_channel_management(client, callback):
 async def handle_forwarded_message(client, message):
     admin_id = get_admin_id()
     if message.from_user.id != admin_id:
+        log_activity(message.from_user.id, "unauthorized_forward", "Non-admin attempted to forward a message")
         return
     
     # Extract channel ID from forwarded message
     if not message.forward_from_chat or message.forward_from_chat.type not in ["channel", "supergroup"]:
         await message.reply("🚫 Please forward a message from a channel or supergroup.")
+        log_activity(admin_id, "invalid_forward", "Forwarded message not from a channel/supergroup")
         return
     
     channel_id = message.forward_from_chat.id
@@ -359,6 +408,7 @@ async def handle_forwarded_message(client, message):
     # Validate if bot is admin of the channel
     if not await is_bot_channel_admin(channel_id):
         await message.reply("🚫 I am not an admin of this channel. Please add me as an admin first.")
+        log_activity(admin_id, "channel_validation_failed", f"Bot is not admin of channel {channel_id}")
         return
     
     # Add channel to database
@@ -374,8 +424,10 @@ async def handle_forwarded_message(client, message):
             f"📚 Channel {channel_id} added successfully.",
             reply_markup=get_storage_channels_menu()
         )
+        log_activity(admin_id, "add_channel", f"Admin added channel {channel_id}")
     except sqlite3.IntegrityError:
         await message.reply("🚫 This channel is already added.")
+        log_activity(admin_id, "channel_already_added", f"Attempted to add channel {channel_id} again")
     finally:
         conn.close()
 
