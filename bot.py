@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import re
 import logging
+from threading import Thread
 
 # Flask app for keep-alive
 flask_app = Flask(__name__)
@@ -431,19 +432,24 @@ async def handle_forwarded_message(client, message):
     finally:
         conn.close()
 
-# Main function
-async def main():
-    init_db()
-    # Start Flask in a separate thread
-    from threading import Thread
-    flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000))))
-    flask_thread.daemon = True
-    flask_thread.start()
-    
-    # Start bot
+# Run Pyrogram bot in a separate thread
+async def run_bot():
     await app.start()
     print("Bot started!")
     await asyncio.Event().wait()
 
+def start_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_bot())
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    init_db()
+    # Start Pyrogram bot in a thread
+    bot_thread = Thread(target=start_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # Flask app will be run by gunicorn
+    # This block is empty as gunicorn will handle the Flask app
+    pass
