@@ -161,7 +161,7 @@ def get_channel_details_menu(channel_id):
         [InlineKeyboardButton("⬅️ Back to Channels", callback_data="admin_manage_channels")]
     ])
 
-# Start command with admin setup
+# Start command with welcome message and search example
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message):
     user_id = message.from_user.id
@@ -180,7 +180,13 @@ async def start(client, message):
     if user_id == admin_id:
         await message.reply("Welcome, Admin!", reply_markup=get_admin_menu())
     else:
-        await message.reply("Welcome! Send a keyword to search for files.")
+        welcome_message = (
+            "🌍 Welcome to Searching World! 🔍\n"
+            "I can help you find files from our storage channels.\n"
+            "Just send a keyword to search for files.\n\n"
+            "📌 Example: Try searching for 'movie' to find movie files!"
+        )
+        await message.reply(welcome_message)
         log_activity(user_id, "user_start", "User started the bot")
 
 # Admin command
@@ -451,5 +457,4 @@ if __name__ == "__main__":
     bot_thread.start()
     
     # Flask app will be run by gunicorn
-    # This block is empty as gunicorn will handle the Flask app
     pass
