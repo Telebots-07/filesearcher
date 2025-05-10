@@ -1,3 +1,2 @@
 pyrogram==2.0.106 
 Flask==2.3.3 
-sqlite3
